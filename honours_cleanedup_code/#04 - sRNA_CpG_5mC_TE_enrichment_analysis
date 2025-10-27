@@ -1,0 +1,440 @@
+#### Having made heatmaps of co-occurance that show an enrichment of 18nt sized sRNAs when ordered by 5mC tile strength, now making plots to see if they are coming from TEs ###
+
+# Repeat masker output .gff files
+Au3_CHR_hapA_v3.fasta.out.gff
+
+Au3_CHR_hapB_v3.fasta.out.gff
+
+##### Making a .bed for regions where TE family identity is > than 90%
+
+# === Inputs ===
+GFF_A=Au3_CHR_hapA_v3.fasta.out.gff
+GFF_B=Au3_CHR_hapB_v3.fasta.out.gff
+GENOME_SIZES=Au3_hapAB_v3_fixed.chrom.sizes.CHRs   # joined hapA+B chrom sizes
+
+module load bedtools
+
+awk -F'\t' 'BEGIN{OFS="\t"}
+  $2=="RepeatMasker" && $3=="dispersed_repeat" && $6!="." {
+    pdiv=$6+0                 # column 6 = divergence; coerce to number (handles leading spaces)
+    if (pdiv < 10) {
+      chr=$1; start=$4-1; end=$5; strand=$7; attr=$9; motif="NA"
+      # capture the motif name from Target "Motif:..."
+      if (match(attr,/Target[ ]+"?Motif:([^"]+)/,m)) motif=m[1]
+      # NOTE: keep everything for now (don’t drop (A/T)n etc. until you’ve confirmed content)
+      hap=(chr ~ /HapA/ ? "A" : (chr ~ /HapB/ ? "B" : "NA"))
+      pid=100.0-pdiv; score=int(pid*10); if(score<0)score=0; if(score>1000)score=1000
+      print chr,start,end,motif";hap="hap,score,strand
+    }
+  }' "$GFF_A" ${GFF_B:+$GFF_B} \
+| LC_COLLATE=C sort -k1,1 -k2,2n \
+> RM_hapAB_id90_fromGFF.bed
+
+head RM_hapAB_id90_fromGFF.bed
+wc -l RM_hapAB_id90_fromGFF.bed
+
+## Dropping score + strand sense
+
+# Split merged score+strand like 908+ → score=908, strand=+
+awk -v OFS='\t' '
+  # If NF==5 and last field looks like "923+" or "941-"
+  NF==5 && $5 ~ /^[0-9]+[+-]$/ {
+    strand = substr($5, length($5), 1)
+    score  = substr($5, 1, length($5)-1)
+    print $1, $2, $3, $4, score, strand
+    next
+  }
+  # If already 6 fields, just pass through
+  NF>=6 { print $1, $2, $3, $4, $5, $6 }
+' RM_hapAB_id90_fromGFF.bed > RM_hapAB_id90_fromGFF.fix.bed
+
+LC_COLLATE=C sort -k1,1 -k2,2n RM_hapAB_id90_fromGFF.fix.bed > RM_hapAB_id90_fromGFF.bed
+
+RM_hapAB_id90_fromGFF.fix.bed
+
+#### Because there are many tiny repeats, will sort out those that are below 25nt in size ###
+
+vim computeMatrix_Ap_TEs_filtered_25nt.sh
+
+#!/bin/bash
+set -euo pipefail
+
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+mkdir -p computeMatrix_Ap_TE_filtered_25nt
+
+IN=RM_hapAB_id90_fromGFF.fix.bed
+
+# 1) TE-only (drop simple/low-complexity/dust and obvious non-TE buckets)
+awk -F'\t' '$4 !~ /^\(.*\)n;hap=|Simple|Low_complexity|dust|Satellite|RNA_gene|rRNA|tRNA/i' "$IN" \
+> _teonly.bed
+
+# 2) Length filter (choose one)
+MINLEN=25    # Dropping below 25nt
+awk -v m="$MINLEN" 'BEGIN{OFS="\t"} ($3-$2)>=m' _teonly.bed > RM_TE_len${MINLEN}.bed
+rm _teonly.bed
+
+# 3) Matrix (don’t use --skipZeros for unbiased enrichment)
+BINSIZE=$MINLEN   # keep bin size aligned to your min length
+computeMatrix scale-regions \
+  -R RM_TE_len${MINLEN}.bed \
+  -S Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_{18..22}.bw \
+  --beforeRegionStartLength 2000 \
+  --regionBodyLength 1000 \
+  --afterRegionStartLength 2000 \
+  --binSize ${BINSIZE} \
+  --missingDataAsZero \
+  --averageTypeBins mean \
+  --smartLabels \
+  --outFileSortedRegions computeMatrix_Ap_TE_filtered_25nt/regions_used_len${MINLEN}.bed \
+  -p ${SLURM_CPUS_PER_TASK:-1} \
+  -o computeMatrix_Ap_TE_filtered_25nt/sRNA_over_TE_len${MINLEN}_scaled_bs${BINSIZE}.gz
+
+conda deactivate deeptools
+
+
+#Submit job
+step=compute_matrix_srna_TEs_filtered
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 300gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+computeMatrix_Ap_TEs_filtered_25nt.sh
+
+vim computeMatrix_Ap_TEs_filtered_25nt_5mC.sh
+
+#!/bin/bash
+set -euo pipefail
+
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+mkdir -p computeMatrix_Ap_TE_filtered_25nt_5mC
+
+IN=RM_hapAB_id90_fromGFF.fix.bed
+
+# 1) TE-only (drop simple/low-complexity/dust and obvious non-TE buckets)
+awk -F'\t' '$4 !~ /^\(.*\)n;hap=|Simple|Low_complexity|dust|Satellite|RNA_gene|rRNA|tRNA/i' "$IN" \
+> _teonly.bed
+
+# 2) Length filter (choose one)
+MINLEN=25    # Dropping below 25nt
+awk -v m="$MINLEN" 'BEGIN{OFS="\t"} ($3-$2)>=m' _teonly.bed > RM_TE_len${MINLEN}.bed
+rm _teonly.bed
+
+# 3) Matrix (don’t use --skipZeros for unbiased enrichment)
+BINSIZE=$MINLEN   # keep bin size aligned to your min length
+computeMatrix scale-regions \
+  -R RM_TE_len${MINLEN}.bed \
+  -S Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_{18..22}.bw Au3.hifi.pbhmm2.100bp_tiles.bw \
+  --beforeRegionStartLength 2000 \
+  --regionBodyLength 1000 \
+  --afterRegionStartLength 2000 \
+  --binSize ${BINSIZE} \
+  --missingDataAsZero \
+  --averageTypeBins mean \
+  --smartLabels \
+  --outFileSortedRegions computeMatrix_Ap_TE_filtered_25nt_5mC/regions_used_len${MINLEN}.bed \
+  -p ${SLURM_CPUS_PER_TASK:-1} \
+  -o computeMatrix_Ap_TE_filtered_25nt_5mC/sRNA_5mC_over_TE_len${MINLEN}_scaled_bs${BINSIZE}.gz
+
+conda deactivate 
+
+# Submit job
+
+
+#Submit job
+step=compute_matrix_srna_TEs_filtered_5mC
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 300gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+computeMatrix_Ap_TEs_filtered_25nt_5mC.sh
+
+##### PLotting heatmap ######
+
+vim plotHeatmap_TEs_sRNA_5mC.sh
+
+#!/bin/bash
+set -euo pipefail
+
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+
+plotHeatmap \
+  -m sRNA_5mC_over_TE_len25_scaled_bs25.gz \
+  --zMin 0 0 0 0 0 0 \
+  --zMax 10 10 10 10 10 90\
+  --sortRegions descend \
+  --sortUsingSamples 1 \
+  --regionsLabel "Young TEs (>90% family identity)" \
+  --samplesLabel 18nt 19nt 20nt 21nt 22nt CpG_5mC \
+  --startLabel "TES" \
+  --endLabel "TEE" \
+  --xAxisLabel "+/- bp from Young TE" \
+  --yAxisLabel "sRNA coverage intensity" \
+  -o sRNA_over_RM_hapAB_id90_heatmap3.png
+
+conda deactivate
+
+#Submit job
+step=plotHeatmap_TEs_sRNA_5mC
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 300gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+plotHeatmap_TEs_sRNA_5mC.sh
+
+# Copying over:
+
+rsync -av --include='*.png' --exclude='*' /scratch/project/crisp008/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix_Ap_TE_filtered_25nt_5mC/sRNA_over_RM_hapAB_id90_heatmap3.png /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/
+
+#### At the suggestion of Anne and Pete, creating a metaplot with all values overlayed using the sRNA_5mC_over_TE_len25_scaled_bs25.gz file. This is to be able to clearly say where sRNA peaks coincide with both eachother and CpG ONT signals ####
+
+vim sRNA_5mC_over_TE_len25_scaled_bs25_plotprofile.sh
+
+chmod +x sRNA_5mC_over_TE_len25_scaled_bs25_plotprofile.sh
+
+
+#!/bin/bash
+set -euo pipefail
+
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+plotProfile \
+  -m sRNA_5mC_over_TE_len25_scaled_bs25.gz \
+  --perGroup \
+  --colors pink brown purple red black blue \
+  --samplesLabel 18nt 19nt 20nt 21nt 22nt CpG_5mC \
+  --startLabel "TES" \
+  --endLabel "TEE" \
+  --outFileNameData youngTE_profile.tsv \
+  -out sRNA_5mC_over_youngTEs_combinedplotProfile.pdf
+
+conda deactivate 
+
+rsync -av --include='*.pdf' --exclude='*' /scratch/project/crisp008/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix_Ap_TE_filtered_25nt_5mC/sRNA_5mC_over_youngTEs_combinedplotProfile.pdf /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/
+
+cp /scratch/project/crisp008/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix_Ap_TE_filtered_25nt_5mC/sRNA_5mC_over_youngTEs_combinedplotProfile.pdf /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/
+
+  
+#### Running job
+
+
+#Submit job
+step=plotProfile_youngTEs
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 50gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+sRNA_5mC_over_TE_len25_scaled_bs25_plotprofile.sh
+
+###### Now for old TE analysis as we've shown clear signal between 18-22 nt size class sRNA for "young" TEs, moving on to doing the same for "old" TEs with <90% family identity to see if this trend is specific or not # #####
+
+# === Inputs ===
+GFF_A=Au3_CHR_hapA_v3.fasta.out.gff
+GFF_B=Au3_CHR_hapB_v3.fasta.out.gff
+
+# GFF → BED6 (only percDiv >= 10)
+awk -F'\t' 'BEGIN{OFS="\t"}
+  $2=="RepeatMasker" && $3=="dispersed_repeat" && $6!="." {
+    pdiv=$6+0
+    if (pdiv >= 10) {
+      chr=$1; start=$4-1; end=$5; strand=$7; attr=$9; motif="NA"
+      if (match(attr,/Target[ ]+"?Motif:([^"]+)/,m)) motif=m[1]
+      hap=(chr ~ /HapA/ ? "A" : (chr ~ /HapB/ ? "B" : "NA"))
+      pid=100.0-pdiv; score=int(pid*10); if(score<0)score=0; if(score>1000)score=1000
+      print chr,start,end,motif";hap="hap,score,strand
+    }
+  }' "$GFF_A" "$GFF_B" \
+| LC_COLLATE=C sort -k1,1 -k2,2n \
+> RM_id_lt90.raw.bed
+
+# Fix any fused score/strand like "908+" → "908\t+"
+awk -v OFS='\t' '
+  NF==5 && $5 ~ /^[0-9]+[+-]$/ {strand=substr($5,length($5),1); score=substr($5,1,length($5)-1); print $1,$2,$3,$4,score,strand; next}
+  {print $1,$2,$3,$4,$5,$6}
+' RM_id_lt90.raw.bed \
+| LC_COLLATE=C sort -k1,1 -k2,2n \
+> RM_id_lt90.bed
+
+wc -l RM_id_lt90.raw.bed RM_id_lt90.bed
+
+
+
+cp /scratch/project_mnt/S0100/seb/a_psidii_TEs/RM_id_lt90.bed /scratch/project_mnt/S0100/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/
+ 
+# Running the compute matrix code plus dropping any sRNAs with the size smaller than 25nt
+
+vim computeMatrix_Ap_oldTEs_filtered_25nt_5mC_2.sh
+
+#!/bin/bash
+set -euo pipefail
+
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+mkdir -p computeMatrix_Ap_oldTE_filtered_25nt_5mC_2
+
+IN=RM_id_lt90.bed
+
+# 1) TE-only (drop simple/low-complexity/dust and obvious non-TE buckets)
+awk -F'\t' '$4 !~ /^\(.*\)n;hap=|Simple|Low_complexity|dust|Satellite|RNA_gene|rRNA|tRNA/i' "$IN" \
+> _teonly.bed
+
+# 2) Length filter (choose one)
+MINLEN=25    # Dropping below 25nt
+awk -v m="$MINLEN" 'BEGIN{OFS="\t"} ($3-$2)>=m' _teonly.bed > RM_TE_len${MINLEN}.bed
+rm _teonly.bed
+
+# 3) Matrix (don’t use --skipZeros for unbiased enrichment)
+BINSIZE=$MINLEN   # keep bin size aligned to your min length
+computeMatrix scale-regions \
+  -R RM_TE_len${MINLEN}.bed \
+  -S Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_{18..22}.bw Au3.hifi.pbhmm2.100bp_tiles.bw \
+  --beforeRegionStartLength 2000 \
+  --regionBodyLength 1000 \
+  --afterRegionStartLength 2000 \
+  --binSize ${BINSIZE} \
+  --missingDataAsZero \
+  --averageTypeBins mean \
+  --smartLabels \
+  --outFileSortedRegions computeMatrix_Ap_oldTE_filtered_25nt_5mC_2/regions_used_len${MINLEN}.bed \
+  -p ${SLURM_CPUS_PER_TASK:-1} \
+  -o computeMatrix_Ap_oldTE_filtered_25nt_5mC_2/sRNA_5mC_over_oldTE_len${MINLEN}_scaled_bs${BINSIZE}.gz
+
+conda deactivate 
+
+## Launch job
+
+step=compute_matrix_srna_oldTEs_filtered_5mC
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 300gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+computeMatrix_Ap_oldTEs_filtered_25nt_5mC_2.sh
+
+seff 16523009
+
+#### Plotting heatMap ####
+
+vim plotHeatmap_oldTEs_sRNA_5mC_2.sh
+
+#!/bin/bash
+set -euo pipefail
+
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+
+plotHeatmap \
+  -m sRNA_5mC_over_oldTE_len25_scaled_bs25.gz \
+  --zMin 0 0 0 0 0 0 \
+  --zMax 10 10 10 10 10 90\
+  --sortRegions descend \
+  --sortUsingSamples 1 \
+  --regionsLabel "Old TEs (<90% family identity)" \
+  --samplesLabel 18nt 19nt 20nt 21nt 22nt CpG_5mC \
+  --startLabel "TES" \
+  --endLabel "TEE" \
+  --xAxisLabel "+/- bp from Old TE" \
+  --yAxisLabel "sRNA coverage intensity" \
+  -o sRNA_over_RM_hapAB_idlessthan90_heatmap3.png
+
+conda deactivate
+
+#Submit job
+step=plotHeatmap_TEs_sRNA_5mC
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 300gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+plotHeatmap_oldTEs_sRNA_5mC_2.sh
+
+seff 16523023
+
+## Copying over:
+
+rsync -av --include='*.png' --exclude='*' /scratch/project_mnt/S0100/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix_Ap_oldTE_filtered_25nt_5mC_2/sRNA_over_RM_hapAB_idlessthan90_heatmap3.png /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/
+

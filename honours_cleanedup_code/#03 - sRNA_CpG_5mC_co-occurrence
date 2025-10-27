@@ -1,0 +1,424 @@
+#### To visually and statistically observe if sRNA coverage at higher CpG methylation increased, deeptools was utilised after further processing sRNA and HiFi Tiled data
+
+1. converting sorted and tiled 100 bp tiles to bigwig files
+
+conda activate bedtools
+
+conda install bioconda::ucsc-bedgraphtobigwig
+
+cd /scratch/project/crisp008/seb/a_psidii_5mC/schwessinger_ont_5mC/tiles/
+
+# 5mC
+LC_COLLATE=C sort -k1,1 -k2,2n Au3.hifi.pbhmm2.100bp_tiles.bed > Au3.hifi.pbhmm2.100bp_tiles.bedGraph
+
+# Copying over chrom.sizes into the same directory at the other ONT 100bp files:
+
+cp /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_hap_ab_au3/Au3_hapAB_v3_fixed.chrom.sizes.CHRs /scratch/project/crisp008/seb/a_psidii_5mC/schwessinger_ont_5mC/tiles/
+
+#### New env for ucsc bedgrap to big wig
+conda create -y -n ucsc -c bioconda -c conda-forge ucsc-bedgraphtobigwig
+conda activate ucsc
+
+bedGraphToBigWig Au3.hifi.pbhmm2.100bp_tiles.bedGraph Au3_hapAB_v3_fixed.chrom.sizes.CHRs Au3.hifi.pbhmm2.100bp_tiles.bw
+
+# sRNA size classes 
+
+cp /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_hap_ab_au3/Au3_hapAB_v3_fixed.chrom.sizes.CHRs /scratch/project_mnt/S0100/seb/refseqs/a_psidii/a_psidii_srna/a_psidii_trapr_srna_asawyer_sfletcher_data/tiles/ 
+
+cd /scratch/project_mnt/S0100/seb/refseqs/a_psidii/a_psidii_srna/a_psidii_trapr_srna_asawyer_sfletcher_data/tiles/ 
+
+for i in {18..26}; do
+  f="Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_${i}.bed"
+  base=${f%.bed}
+
+  # Make bedGraph (chrom,start,end,coverage[col7]) and drop APSI_AU3_CTG_###
+  awk 'BEGIN{FS=OFS="\t"}
+       $1 !~ /^APSI_AU3_CTG_[0-9]{3}$/ {
+         v=$7
+         if (v=="" || v=="NA" || v=="NaN" || v=="nan") v=0
+         print $1,$2,$3,v
+       }' "$f" > "${base}.bedGraph"
+
+  # Sort as required by bedGraphToBigWig
+  LC_COLLATE=C sort -k1,1 -k2,2n "${base}.bedGraph" > "${base}.sortedforcomputematrix.bedGraph"
+
+  # Convert to bigWig (chrom names/lengths must match chrom.sizes)
+  bedGraphToBigWig "${base}.sortedforcomputematrix.bedGraph" Au3_hapAB_v3_fixed.chrom.sizes.CHRs "${base}.bw"
+done
+
+#### Deeptools computeMatrix of sRNA against 5mC data
+
+######### Compute matrix code #########
+# Directory for Au3_HapAB 100bp sites:
+
+# Keep all rows whose chrom (col1) does NOT match APSI_AU3_CTG_###
+awk 'BEGIN{FS=OFS="\t"} $1 !~ /^APSI_AU3_CTG_[0-9]{3}$/' \
+  Au3_hapAB_v3_fixed_100bp_tiles.bed > Au3_hapAB_v3_fixed_100bp_tiles.no_ctg.bed
+
+### Due to mismatch in chromosomes reported in 25 and 26 nt sRNA bigwig files, must manually add this back it.
+
+Re-doing bed to bigwig conversion for size classes 25 and 26
+
+for i in {25..26}; do
+  cp "Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_${i}.bw" /scratch/project/crisp008/seb/a_psidii_5mC_x_srna_deeptools/beds_for_deeptools/
+done
+
+cp /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_hap_ab_au3/Au3_hapAB_v3_fixed.chrom.sizes.CHRs /scratch/project/crisp008/seb/a_psidii_5mC_x_srna_deeptools/beds_for_deeptools/
+
+## Done in beds_for_deeptools
+
+conda create -y -n wigrelated -c conda-forge -c bioconda \
+  python=3.10 \
+  deeptools \
+  samtools \
+  ucsc-bedgraphtobigwig \
+  ucsc-bigwiginfo \
+  ucsc-bigwigtobedgraph
+
+conda activate wigrelated
+
+set -euo pipefail
+export LC_ALL=C LC_COLLATE=C
+
+SIZES="Au3_hapAB_v3_fixed.chrom.sizes.CHRs"   # canonical sizes (2 cols: name len)
+
+# 0) make a whitelist of allowed chrom names from SIZES
+cut -f1 "$SIZES" | sort -u > /tmp/keep.names
+
+for i in 25 26; do
+  bed="Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_${i}.bed"
+  base=${bed%.bed}
+
+  echo "== building bedGraph for $bed =="
+
+  # 1) BED -> bedGraph (chrom,start,end,coverage[col7]); tolerate tabs/spaces; skip headers
+  awk 'BEGIN{FS="[ \t]+"; OFS="\t"}
+       /^[#]|^(track|browser)/{next}
+       {
+         v=$7; if(v==""||v=="NA"||v=="NaN") v=0;
+         if ($2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/) print $1,$2,$3,v
+       }' "$bed" > "${base}.bedGraph.raw"
+
+  # quick check: do we still have CTG contigs here?
+  echo -n "CTG lines (raw): "
+  grep -E '^APSI_AU3_CTG_[0-9]{1,3}\b' -c "${base}.bedGraph.raw" || true
+
+  # 2) **Whitelist**: keep ONLY chroms present in SIZES (drops any CTGs or typos)
+  awk 'NR==FNR{keep[$1]=1; next} ($1 in keep)' /tmp/keep.names "${base}.bedGraph.raw" \
+    > "${base}.bedGraph.keep"
+
+  # sanity: confirm no CTGs left
+  echo -n "CTG lines (kept): "
+  grep -E '^APSI_AU3_CTG_[0-9]{1,3}\b' -c "${base}.bedGraph.keep" || true
+
+  # 3) sort
+  sort -k1,1 -k2,2n "${base}.bedGraph.keep" > "${base}.sortedforcomputematrix.bedGraph"
+
+  # 4) add zero placeholders **only for missing chroms from SIZES**
+  cut -f1 "${base}.sortedforcomputematrix.bedGraph" | sort -u > /tmp/present.names
+  comm -23 /tmp/keep.names /tmp/present.names > /tmp/missing.names
+
+  if [[ -s /tmp/missing.names ]]; then
+    echo "Adding zero stubs for $(wc -l < /tmp/missing.names) chroms to ${base}"
+    awk 'BEGIN{FS=OFS="\t"} {print $1,0,1,0}' /tmp/missing.names > /tmp/skeleton.bedGraph
+    cat "${base}.sortedforcomputematrix.bedGraph" /tmp/skeleton.bedGraph \
+      | sort -k1,1 -k2,2n > "${base}.sortedforcomputematrix.filled.bedGraph"
+    mv "${base}.sortedforcomputematrix.filled.bedGraph" "${base}.sortedforcomputematrix.bedGraph"
+  else
+    echo "No missing chroms for ${base}; no stubs added."
+  fi
+
+  # 5) convert -> bigWig
+  bedGraphToBigWig "${base}.sortedforcomputematrix.bedGraph" "$SIZES" "${base}.bw"
+
+  # 6) quick verifies
+  echo "-- non-zero example --"
+  bigWigToBedGraph "${base}.bw" stdout | awk '$4!=0{print; exit}' || echo "no non-zero rows found (may be real)"
+  echo "-- CHR13 present? --"
+  bigWigInfo -chroms "${base}.bw" | awk 'NR>2 && $1~/CHR13/ {gsub(/,/, "", $3); print $1,$3}'
+done
+
+## THis worked fine, copied files over into correct directory and replaced new 25 and 26 bw files with the old one
+
+########################### The below is the code used to generate sRNA and 5mC heatmaps as sorted by 5mC strength.
+
+vim computeMatrix.sh
+
+#!/bin/bash
+set -euo pipefail
+
+# make conda work in batch mode
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+mkdir -p computeMatrix
+
+computeMatrix scale-regions \
+  -R Au3_hapAB_v3_fixed_100bp_tiles.no_ctg.bed \
+  -S Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_{18..26}.bw Au3.hifi.pbhmm2.100bp_tiles.bw \
+  --beforeRegionStartLength 0 \
+  --regionBodyLength 100 \
+  --afterRegionStartLength 0 \
+  --binSize 100 \
+  --missingDataAsZero \
+  --smartLabels \
+  -p ${SLURM_CPUS_PER_TASK:-1} \
+  -o computeMatrix/matrix_sRNA_vs_5mC.gz
+
+conda deactivate
+
+# Exit VIM
+
+Submit job
+step=compute_matrix_srna
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 96gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+computeMatrix.sh
+
+
+####### Heatmap sorted by 5mC strength code ######
+
+Submit job
+step=plotHeatmap_srna_ont
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 96gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+plotHeatmap_sRNA_ONT_refined.sh
+
+
+#!/bin/bash
+set -euo pipefail
+
+# make conda work in batch mode
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+plotHeatmap \
+  -m matrix_sRNA_vs_5mC.gz \
+  --sortRegions descend \
+  --sortUsingSamples 10 \
+  --samplesLabel 18nt 19nt 20nt 21nt 22nt 23nt 24nt 25nt 26nt "ONT CpG 5mC" \
+  --regionsLabel "100bp tiles" \
+  --plotTitle "A. psidii sRNA size class coverage vs ONT CpG 5mC" \
+  --refPointLabel "100 bp tile" \
+  --xAxisLabel "" \
+  --yAxisLabel "A. psidii HapAB_Au3 100 bp summed sRNA coverage tiles" \
+  --zMin 0 0 0 0 0 0 0 0 0 0 \
+  --zMax 10 10 10 10 10 10 10 10 10 90 \
+  -o heatmap_sRNA_vs_5mC_tiles.png  
+
+conda deactivate
+
+# Copying over heatmap_sRNA_vs_5mC.png to Rdm to view
+
+rsync -av --include='*.png' --exclude='*' /scratch/project_mnt/S0100/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix/heatmap_sRNA_vs_5mC_tiles2.png /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/ 
+
+# Re-doing compute matrix to include flanking tiles starting for 3kb +/-
+
+#!/bin/bash
+set -euo pipefail
+
+# make conda work in batch mode
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+mkdir -p computeMatrix_2kbflanks
+
+computeMatrix scale-regions \
+  -R Au3_hapAB_v3_fixed_100bp_tiles.no_ctg.bed \
+  -S Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_{18..22}.bw Au3.hifi.pbhmm2.100bp_tiles.bw \
+  --beforeRegionStartLength 3000 \
+  --regionBodyLength 100 \
+  --afterRegionStartLength 3000 \
+  --binSize 100 \
+  --missingDataAsZero \
+  --smartLabels \
+  -p ${SLURM_CPUS_PER_TASK:-1} \
+  -o computeMatrix_2kbflanks/matrix_sRNA_vs_5mC_2kbflanks.gz
+
+conda deactivate
+
+#Submit job
+step=compute_matrix_srna
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 96gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+computeMatrix_3kbflanks.sh
+
+# Plot heatmap of this compute_matrix
+
+vim plotHeatmap_sRNA_ONT_3kbflanks.sh
+
+plotHeatmap \
+  -m matrix_sRNA_vs_5mC_3kbflanks.gz \
+  --sortRegions descend \
+  --sortUsingSamples 6 \
+  --samplesLabel 18nt 19nt 20nt 21nt 22nt "5mC" \
+  --zMin 0 0 0 0 0 0 \
+  --zMax 10 10 10 10 10 90 \
+  -o heatmap_sRNA_vs_5mC_3kbflanks.png  
+
+#
+
+Submit job
+step=plotHeatmap_srna_ont
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 2 \
+--mem 300gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+plotHeatmap_sRNA_ONT_3kbflanks.sh
+
+rsync -av --include='*.png' --exclude='*' /scratch/project_mnt/S0100/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix_2kbflanks/heatmap_sRNA_vs_5mC_3kbflanks_nearest_interpolationMethod.png /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/
+
+#### After plotting what the 18-22 nt sRNA size classes look like after a 6 kb window (+/- 3kb of sRNA tile), going to try with a 10kb window on either side except just for size classes 18 and 19 as to avoid the OOM kill message  ####
+
+
+vim computeMatrix_10kbflanks_nozero_18_19.sh
+
+#!/bin/bash
+set -euo pipefail
+
+# make conda work in batch mode
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+mkdir -p computeMatrix_10kbflanks_nozero_18_19
+
+computeMatrix scale-regions \
+  -R Au3_hapAB_v3_fixed_100bp_tiles.no_ctg.bed \
+  -S Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_{18..19}.bw Au3.hifi.pbhmm2.100bp_tiles.bw \
+  --beforeRegionStartLength 10000 \
+  --regionBodyLength 100 \
+  --afterRegionStartLength 10000 \
+  --binSize 100 \
+  --missingDataAsZero \
+  --skipZeros \
+  --smartLabels \
+  -p ${SLURM_CPUS_PER_TASK:-1} \
+  -o computeMatrix_10kbflanks_nozero_18_19/matrix_10kbflanks_nozero_18_19.sh.gz
+
+conda deactivate
+
+#Submit job
+step=compute_matrix_srna
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 64:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 16 \
+--mem 500gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+computeMatrix_10kbflanks_nozero_18_19.sh
+
+### Above worked, making heatmap
+
+vim plotHeatmap_sRNA_ONT_10kb_flanks_18_19.sh
+
+#!/bin/bash
+set -euo pipefail
+
+# make conda work in batch mode
+module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
+conda activate deeptools
+
+plotHeatmap \
+  -m matrix_sRNA_vs_5mC_1kbflanks_nozero.gz \
+  --sortRegions descend \
+  --sortUsingSamples 3 \
+  --samplesLabel 18nt 19nt "5mC" \
+  --zMin 0 0 0 \
+  --zMax 10 10 90 \
+  -o heatmap_sRNA_vs_5mC_10kbflanks_18_19.png  
+
+conda deactivate
+
+rsync -av --include='*.png' --exclude='*' /scratch/project/crisp008/seb/a_psidii_5mC_x_srna_deeptools/deeptools_formatted_bws/computeMatrix_10kbflanks_nozero_18_19/heatmap_sRNA_vs_5mC_10kbflanks_18_19.png /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/deeptools/heatmap_outputs/multiheatmaps_srna_trials/
+
+## Submitting job
+
+
+#Submit job
+step=compute_matrix_srna
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 64:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 2 \
+--mem 500gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+plotHeatmap_sRNA_ONT_10kb_flanks_18_19.sh

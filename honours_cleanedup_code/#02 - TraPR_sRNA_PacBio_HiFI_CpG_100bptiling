@@ -1,0 +1,199 @@
+
+# In directory with sRNA TraPR .bed files
+
+bed_to_100bpsorted.sh
+
+#!/bin/bash
+
+mkdir -p tiles
+
+#Call bedtools from conda env
+module load bedtools/2.30.0-gcc-10.3.0
+
+
+for i in {18..26}; do
+  # Input and output filenames
+  bed_file="Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_${i}.bed"
+  bed_sorted_file="Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_sorted_${i}.bed"
+  bed_100bp_tiles="tiles/Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_${i}.bed"
+
+  #Sorting coverage by chromosome ie APSI_AU3_CTG_001 to APSI_AU3_CTG_002 etc....
+
+  LC_COLLATE=C sort -k1,1 -k2,2n "$bed_file" > "$bed_sorted_file"
+
+  # Use closest to overlap with 100bp tile then summarise with grouby
+
+  bedtools closest -t all -a /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_srna/a_psidii_trapr_srna_asawyer_sfletcher_data/$bed_sorted_file -b /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_hap_ab_au3/sites/Au3_hapAB_v3_fixed_100bp_tiles_zBased_sites_counts.bed |
+  bedtools groupby -g 5,6,7,8,9,10 -c 4 > "$bed_100bp_tiles"
+done
+
+conda deactivate 
+
+#exit Vim
+
+## make the .sh file executable 
+
+chmod +x bed_to_100bpsorted.sh
+
+./bed_to_100bpsorted.sh
+
+#Submit job
+step=make_tiles
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 2 \
+--mem 30gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+bed_to_100bpsorted.sh
+
+head for Austropuccinia_psidii_Au3_wholegenome_Austropuccinia_psidii_neg_noSplit_100bp_${i}.bed file:
+
+chromosome    tile start/end  CG, CHG, CHH sRNA coverage 
+
+APSI_AU3_CTG_001	400	  500	  0	10	30	0.968667
+APSI_AU3_CTG_001	700	  800	  2	7	  36	1.018
+APSI_AU3_CTG_001	1700	1800	0	10	28	0.81
+APSI_AU3_CTG_001	2500	2600	0	8	  38	1.15967
+APSI_AU3_CTG_001	2600	2700	0	10	35	1.15967
+APSI_AU3_CTG_001	2700	2800	0	4	  30	1.13867
+APSI_AU3_CTG_001	2800	2900	0	8	  40	4.48133
+APSI_AU3_CTG_001	3200	3300	0	6	  38	0.705667
+APSI_AU3_CTG_001	3300	3400	2	10	30	0.872333
+APSI_AU3_CTG_001	3600	3700	0	8	  36	0.638333
+
+##### PacBio HiFi .bed files will be analysed as with the sRNA data however, instead of the sum of mapped events (coverage), we will average the amount of methylation within a 100 bp tile.
+
+#copying over ONT 5mC data from Rdm to Crisp scratch 
+
+cp /QRISdata/Q5873/seb/a_psidii/a_psidii_srna_5mc_trapr/* /scratch/project/crisp008/seb/a_psidii_5mC/schwessinger_ont_5mC/ 
+
+# sorting data from the .bed file and averaging the correct column to generate an output that contains an average 5mC content in the 100 bp tile.
+
+#.bed file of the HiFi is in this format
+
+Chromosome positions            mC freq (%) total reads mC reads/um reads   % reads methylated
+APSI_AU3_HapA_CHR01	10700	10701	92.7	      Total	8	    8	      0	          100.0
+APSI_AU3_HapA_CHR01	10980	10981	85.8	      Total	8	    7	      1	          87.5
+APSI_AU3_HapA_CHR01	11237	11238	95.6	      Total	8	    8	      0	          100.0
+APSI_AU3_HapA_CHR01	11457	11458	94.1	      Total	8	    8	      0	          100.0
+
+# Re-using code from before except without loop
+
+#!/bin/bash
+
+mkdir -p tiles
+
+#Call bedtools from conda env
+module load bedtools/2.30.0-gcc-10.3.0
+
+#Sorting coverage by chromosome ie APSI_AU3_CTG_001 to APSI_AU3_CTG_002 etc....
+
+LC_COLLATE=C sort -k1,1 -k2,2n Au3.hifi.pbhmm2.bed > Au3.hifi.pbhmm2.sorted.bed
+
+## Summary of the Au3.hifi.pbhmm2.sorted.bed (pretty much just what Ben sent us was already in this format)
+
+APSI_AU3_HapA_CHR01	10700	10701	92.7	Total	8	8	0	100.0
+APSI_AU3_HapA_CHR01	10980	10981	85.8	Total	8	7	1	87.5
+APSI_AU3_HapA_CHR01	11237	11238	95.6	Total	8	8	0	100.0
+APSI_AU3_HapA_CHR01	11457	11458	94.1	Total	8	8	0	100.0
+APSI_AU3_HapA_CHR01	11500	11501	48.5	Total	8	4	4	50.0
+APSI_AU3_HapA_CHR01	12980	12981	64.1	Total	9	5	4	55.6
+APSI_AU3_HapA_CHR01	13095	13096	95.0	Total	9	9	0	100.0
+APSI_AU3_HapA_CHR01	14198	14199	82.1	Total	8	7	1	87.5
+APSI_AU3_HapA_CHR01	14855	14856	95.2	Total	9	9	0	100.0
+APSI_AU3_HapA_CHR01	14870	14871	95.0	Total	9	9	0	100.0
+
+# Use closest to overlap with 100bp tile then average 5mC per 100bp tile using groupby and -o mean
+
+### Trying below:
+bedtools closest -t all -a /scratch/project/crisp008/seb/a_psidii_5mC/schwessinger_ont_5mC/Au3.hifi.pbhmm2.sorted.bed -b /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_hap_ab_au3/sites/Au3_hapAB_v3_fixed_100bp_tiles_zBased_sites_counts.bed |
+bedtools groupby -g 10,11,12 -c 4 -o mean > tiles/Au3.hifi.pbhmm2.100bp_tiles.bed
+
+## make the .sh file executable 
+
+chmod +x schwessinger_bed_to_100bpsorted.sh
+
+./schwessinger_bed_to_100bpsorted.sh
+
+#Submit job
+step=make_tiles
+mkdir -p logs
+timestamp=$(date +%Y%m%d-%H%M%S)
+log_folder=logs/${timestamp}_${step}
+mkdir $log_folder
+
+sbatch \
+-t 24:00:00 \
+-N 1 \
+-n 1 \
+--cpus-per-task 2 \
+--mem 30gb \
+-o ${log_folder}/${step}_o_%A_%a \
+-e ${log_folder}/${step}_e_%A_%a \
+--account a_crisp \
+--partition general \
+--job-name $step \
+schwessinger_bed_to_100bpsorted.sh
+
+
+# This worked
+APSI_AU3_HapA_CHR01	10700	10800	92.7
+APSI_AU3_HapA_CHR01	10900	11000	85.8
+APSI_AU3_HapA_CHR01	11200	11300	95.6
+APSI_AU3_HapA_CHR01	11400	11500	94.1
+APSI_AU3_HapA_CHR01	11500	11600	48.5
+APSI_AU3_HapA_CHR01	12900	13000	64.1
+APSI_AU3_HapA_CHR01	13000	13100	95
+APSI_AU3_HapA_CHR01	14100	14200	82.1
+APSI_AU3_HapA_CHR01	14800	14900	95.1
+APSI_AU3_HapA_CHR01	14900	15000	93.8
+
+# We now have the sRNA mapping frequency as well as methylation context sites within the 100bp tiles (table 1), and also the ONT 5mC data with average % methylated CpG in the 100bp tile (table 2)
+
+cd /scratch/project_mnt/S0100/seb/refseqs/a_psidii/a_psidii_srna/a_psidii_trapr_srna_asawyer_sfletcher_data/tiles/
+$a_psidii_trapr_srna_asawyer_sfletcher_data
+APSI_AU3_CTG_001	400	  500	  0	10	30	0.968667
+APSI_AU3_CTG_001	700	  800	  2	7	  36	1.018
+APSI_AU3_CTG_001	1700	1800	0	10	28	0.81
+APSI_AU3_CTG_001	2500	2600	0	8	  38	1.15967
+APSI_AU3_CTG_001	2600	2700	0	10	35	1.15967
+APSI_AU3_CTG_001	2700	2800	0	4	  30	1.13867
+APSI_AU3_CTG_001	2800	2900	0	8	  40	4.48133
+APSI_AU3_CTG_001	3200	3300	0	6	  38	0.705667
+APSI_AU3_CTG_001	3300	3400	2	10	30	0.872333
+APSI_AU3_CTG_001	3600	3700	0	8	  36	0.638333
+
+### Removing CTG during read distribution analysis. Only look for where HiFi has data (Zeros can be filled in later using NA = 0 function). 
+cd /scratch/project_mnt/S0100/seb/a_psidii_5mC/schwessinger_ont_5mC/tiles/
+$schwessinger_ont_5mC
+APSI_AU3_HapA_CHR01	10700	10800	92.7
+APSI_AU3_HapA_CHR01	10900	11000	85.8
+APSI_AU3_HapA_CHR01	11200	11300	95.6
+APSI_AU3_HapA_CHR01	11400	11500	94.1
+APSI_AU3_HapA_CHR01	11500	11600	48.5
+APSI_AU3_HapA_CHR01	12900	13000	64.1
+APSI_AU3_HapA_CHR01	13000	13100	95
+APSI_AU3_HapA_CHR01	14100	14200	82.1
+APSI_AU3_HapA_CHR01	14800	14900	95.1
+APSI_AU3_HapA_CHR01	14900	15000	93.8
+
+### sanity check the coverage computed here vs IGV visualisation of both sRNA and HiFi .bigwig and bed files
+# changing the cols of the sRNA .bed files as sRNA coverage metric is not able to be loaded in due to how IGV reads .bed files
+
+for f in *.bed; do
+  awk '{print $1, $2, $3, $7, $4, $5, $6}' "$f" > "${f%.bed}_IGVcompatible.bed"
+done
+
+
+

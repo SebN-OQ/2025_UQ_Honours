@@ -1,0 +1,67 @@
+# The purpose of the below code is to analyse the co-occurance between 5-methyl-cytosines in the 
+# Austropuccinia genome with sRNAs derived from various features of the genome; namely, TEs and genic vs non-genic regions.
+
+# The 5mC data was gifted to us by the Schwessinger group from ANU and is PacBio HiFi long reads. The data is in .bed and .bwg format and notes methylation at ONLY CpG contexts.
+
+# All data has been mapped to the Au3_v3 version of the Austropuccinia genome. 
+
+# sRNA data was collected using the TraPR small RNA isolation kit. This Means that the sRNA's sequenced are also Argonaute (AGO) loaded. 
+
+# This document contains the code used to tile the Austropuccinia psidii Au3_v3 genome utilised in the linked thesis document.
+
+seqtk comp Au3_hapAB_v3_fixed.fasta | cut -f 1-2 | sort -k1,1 -k2,2n - > Au3_hapAB_v3_fixed.chrom.sizes
+wc -l Au3_hapAB_v3_fixed.chrom.sizes
+less Au3_hapAB_v3_fixed.chrom.sizes
+APSI_AU3_CTG_001        2391115
+APSI_AU3_CTG_002        1499629
+APSI_AU3_CTG_003        800000
+APSI_AU3_CTG_004        556426
+APSI_AU3_CTG_005        500000
+APSI_AU3_CTG_006        500000
+APSI_AU3_CTG_007        500000
+APSI_AU3_CTG_008        399107
+APSI_AU3_CTG_009        280009
+APSI_AU3_CTG_010        275724
+APSI_AU3_CTG_011        269937
+
+# create a text file, make sure it has 2 lines and the second line is empty
+vim genome.txt
+
+Au3_hapAB_v3_fixed  #(Line 1)
+                    #(Line 2)
+# create foft link (script expect file to be called ".fa" not ".fasta"
+ln -s Au3_hapAB_v3_fixed.fasta Au3_hapAB_v3_fixed.fa
+
+bash \
+/home/{$user}/gitrepos/crisplab_epigenomics/methylome-s/create_genome_tile_mC_counts_sbatch.sh \
+genome.txt \
+24:00:00 \
+40 \
+a_crisp
+
+#To check if file was succesfully turned into a 100 bp tiled genome in this path: /scratch/project/crisp008/seb/refseqs/a_psidii/a_psidii_hap_ab_au3/sites
+head Au3_hapAB_v3_fixed_100bp_tiles.bed
+
+# reference tile file format:
+head Au3_hapAB_v3_fixed_100bp_tiles.bed
+#Output:
+APSI_AU3_CTG_001	0	100	APSI_AU3_CTG_001:0-100
+APSI_AU3_CTG_001	100	200	APSI_AU3_CTG_001:100-200
+APSI_AU3_CTG_001	200	300	APSI_AU3_CTG_001:200-300
+
+## Removing any unresolved contigs within the Au3_v3 A. psidii genome
+
+sed '/^APSI_AU3_CTG_[0-9]\{1,3\}\b/d' Au3_hapAB_v3_fixed_100bp_tiles.bed > Au3_hapAB_v3_fixed_100bp_tiles_noctg.bed
+
+Au3_hapAB_v3_fixed_100bp_tiles_noctg.bed
+
+APSI_AU3_HapA_CHR01	0	100	  APSI_AU3_HapA_CHR01:0-100
+APSI_AU3_HapA_CHR01	100	200	APSI_AU3_HapA_CHR01:100-200
+APSI_AU3_HapA_CHR01	200	300	APSI_AU3_HapA_CHR01:200-300
+APSI_AU3_HapA_CHR01	300	400	APSI_AU3_HapA_CHR01:300-400
+APSI_AU3_HapA_CHR01	400	500	APSI_AU3_HapA_CHR01:400-500
+APSI_AU3_HapA_CHR01	500	600	APSI_AU3_HapA_CHR01:500-600
+APSI_AU3_HapA_CHR01	600	700	APSI_AU3_HapA_CHR01:600-700
+APSI_AU3_HapA_CHR01	700	800	APSI_AU3_HapA_CHR01:700-800
+APSI_AU3_HapA_CHR01	800	900	APSI_AU3_HapA_CHR01:800-900
+APSI_AU3_HapA_CHR01	900	1000	APSI_AU3_HapA_CHR01:900-1000
